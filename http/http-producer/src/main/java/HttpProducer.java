@@ -71,21 +71,21 @@ public class HttpProducer {
                 try {
                     LOGGER.info("Sending message: {}", record.getMessage());
                     HttpHandle<String> httpHandle = th.createHttpHandle("send-messages");
-                    List<OffsetRecordSent> offsetRecords = Arrays.asList(client.sendAsync(httpHandle.build(record.getContext()), HttpResponse.BodyHandlers.ofString())
-                        .thenApply(httpHandle::finish)
-                        .thenApply(result -> {
-                            if (result.statusCode() != HttpResponseStatus.OK.code()) {
-                                LOGGER.error("Error while sending message {} : {}", record.getMessage(), result.body());
-                                sendSuccessful[0] = false;
-                            } else if (result.body().equals("[]") && result.statusCode() == HttpResponseStatus.OK.code()) {
-                                LOGGER.info("Array with messages is empty, no messages were received!");
-                            }
-                            return new JsonObject(result.body()).getJsonArray("offsets").toString();
-                        })
-                        .thenApply(uncheckedObjectMapper::readValue)
-                        .get());
+                    // sendAsync messes-up OpenTelemetry ... the problem is Context::current, which uses ThreadLocal,
+                    // since we start the span in this thread, and we finish it in client's async thread
+                    HttpResponse<String> result = client.send(httpHandle.build(record.getContext()), HttpResponse.BodyHandlers.ofString());
+                    httpHandle.finish(result);
 
-                    offsetRecords.forEach(offsetRecord -> LOGGER.info("{}", offsetRecord.toString()));
+                    if (result.statusCode() != HttpResponseStatus.OK.code()) {
+                        LOGGER.error("Error while sending message {} : {}", record.getMessage(), result.body());
+                        sendSuccessful[0] = false;
+                    } else if (result.body().equals("[]") && result.statusCode() == HttpResponseStatus.OK.code()) {
+                        LOGGER.info("Array with messages is empty, no messages were received!");
+                    }
+
+                    String json = new JsonObject(result.body()).getJsonArray("offsets").toString();
+                    OffsetRecordSent[] ofs = uncheckedObjectMapper.readValue(json);
+                    Arrays.stream(ofs).forEach(offsetRecord -> LOGGER.info("{}", offsetRecord.toString()));
                 } catch (Exception e) {
                     LOGGER.error("Exception while executing send request. Message: {} and cause: {}", e.getMessage(), e.getCause());
                     sendSuccessful[0] = false;
